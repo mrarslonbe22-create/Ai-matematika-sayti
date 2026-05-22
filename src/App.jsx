@@ -562,9 +562,6 @@ ${batchTopics.length} ta savol:`;
     }
   }
 
-  // resultsRef — state async bo'lgani uchun ref orqali to'g'ri qiymat olamiz
-  const resultsRef = useRef([]);
-
   function confirm() {
     if (selected === null) return;
     const q = questions[qi];
