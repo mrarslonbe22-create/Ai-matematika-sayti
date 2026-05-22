@@ -443,6 +443,7 @@ function TestPage({ user, saveUser, nav }) {
   const [results, setResults] = useState([]);
   const [analysis, setAnalysis] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [levelChanged, setLevelChanged] = useState("");
   const [genError, setGenError] = useState("");
   const resultsRef = useRef([]);
 
@@ -501,25 +502,59 @@ function TestPage({ user, saveUser, nav }) {
 
     const SYSTEM = "Siz matematik test yaratuvchi AI siz. FAQAT sof JSON array qaytaring. Boshida [ belgisi, oxirida ] belgisi bo'lsin. Hech qanday ``` kod bloki, izoh yoki qo'shimcha matn YO'Q.";
 
-    function makePrompt(batch, batchTopics) {
-      return `O'zbek tilida matematika testi. ${batchTopics.length} ta savol yarat.
+    // Har batch uchun random raqamlar generatsiya — takrorlanmaslik uchun
+    const randNums = () => {
+      const a = Math.floor(Math.random()*50)+2;
+      const b = Math.floor(Math.random()*30)+2;
+      return {a, b, c: a+b, d: a-b, e: a*b};
+    };
+
+    function makePrompt(batchTopics) {
+      const r = randNums();
+      return `O'zbek tilida matematika testi. ANIQ ${batchTopics.length} ta savol yarat.
 
 DARAJA ${user.level}/10: ${levelRules}
 
-Mavzular: ${batchTopics.join(" | ")}
+Har bir mavzu uchun 1 ta savol (tartibda):
+${batchTopics.map((t,i)=>`${i+1}. ${t}`).join("\n")}
 
-QOIDALAR:
-- Har savol to'liq va aniq bo'lsin: "15 + 27 = ?" yoki "Agar x + 5 = 13 bo'lsa, x = ?"
-- 4 ta variant yarat, faqat biri to'g'ri
-- "correct" maydoniga TO'G'RI JAVOB MATNINI yoz (opts ichidagi to'g'ri variantni aynan ko'chir)
-- To'g'ri javob har doim turli pozitsiyada bo'lsin (har safar A emas!)
+MAJBURIY QOIDALAR:
+1. Har savol ANIQ raqamlar bilan: masalan "${r.a} + ${r.b} = ?" yoki "x + ${r.b} = ${r.c}, x = ?"
+2. Savol matni kamida 10 belgi bo'lsin
+3. "correct" — opts massividagi to'g'ri javobning AYNAN o'zi (nusxa ko'chir)
+4. To'g'ri javob A, B, C, D da HAR XIL joylashsin
+5. Barcha ${batchTopics.length} ta mavzu uchun savol bo'lishi SHART
 
-Format (faqat shu, boshqa narsa yo'q):
-[{"topic":"mavzu nomi","q":"to'liq savol matni","opts":["A) ...", "B) ...", "C) ...", "D) ..."],"correct":"B) 10 so'm","exp":"50 × 0.2 = 10"}]
+JSON (faqat bu format, hech narsa qo'shma):
+[{"topic":"mavzu","q":"to'liq savol?","opts":["A) qiymat1","B) qiymat2","C) qiymat3","D) qiymat4"],"correct":"B) qiymat2","exp":"qisqa yechim"}]`;
+    }
 
-MUHIM: "correct" — opts ichidagi to'g'ri javobning AYNAN o'zi bo'lsin.
-
-${batchTopics.length} ta savol:`;
+    // Bir batch uchun so'rov + qayta urinish
+    async function fetchBatch(batchTopics, attempt = 0) {
+      const raw = await callAI([{ role:"user", content: makePrompt(batchTopics) }], SYSTEM, 2500);
+      const match = raw.match(/\[[\s\S]*\]/);
+      if (!match) { if (attempt < 2) return fetchBatch(batchTopics, attempt+1); return []; }
+      try {
+        const arr = JSON.parse(match[0]);
+        const valid = arr.filter(q =>
+          q.q && q.q.length >= 8 &&
+          Array.isArray(q.opts) && q.opts.length === 4 &&
+          q.opts.every(o => typeof o === "string" && o.length > 2) &&
+          typeof q.correct === "string" && q.opts.includes(q.correct)
+        ).map((q, i) => ({
+          ...q,
+          ans: q.opts.indexOf(q.correct),
+          _topic: batchTopics[i] || q.topic || batchTopics[0],
+        }));
+        // Agar yetarli kelmasa qayta urinish (max 2 marta)
+        if (valid.length < batchTopics.length * 0.6 && attempt < 2) {
+          return fetchBatch(batchTopics, attempt + 1);
+        }
+        return valid;
+      } catch {
+        if (attempt < 2) return fetchBatch(batchTopics, attempt + 1);
+        return [];
+      }
     }
 
     try {
@@ -527,48 +562,26 @@ ${batchTopics.length} ta savol:`;
       const batch2 = topics.slice(10, 20);
       const batch3 = topics.slice(20, 30);
 
-      const [r1, r2, r3] = await Promise.all([
-        callAI([{ role: "user", content: makePrompt(1, batch1) }], SYSTEM, 2000),
-        callAI([{ role: "user", content: makePrompt(2, batch2) }], SYSTEM, 2000),
-        callAI([{ role: "user", content: makePrompt(3, batch3) }], SYSTEM, 2000),
+      // Parallel so'rovlar
+      const [q1, q2, q3] = await Promise.all([
+        fetchBatch(batch1),
+        fetchBatch(batch2),
+        fetchBatch(batch3),
       ]);
 
-      function parseRaw(raw, batchTopics) {
-        // greedy match — nested brackets uchun
-        const match = raw.match(/\[[\s\S]*\]/);
-        if (!match) return [];
-        try {
-          const arr = JSON.parse(match[0]);
-          return arr.filter(q =>
-            q.q && q.q.length > 5 &&
-            Array.isArray(q.opts) && q.opts.length === 4 &&
-            q.opts.every(o => o && o.length > 2) &&
-            q.correct && q.opts.includes(q.correct) // correct opts ichida bo'lishi shart
-          ).map((q, i) => ({
-            ...q,
-            // ans ni correct matnidan topamiz — xato bo'lmaydi
-            ans: q.opts.indexOf(q.correct),
-            _topic: batchTopics[i] || q.topic,
-          }));
-        } catch { return []; }
-      }
+      const all = [...q1, ...q2, ...q3];
 
-      const all = [
-        ...parseRaw(r1, batch1),
-        ...parseRaw(r2, batch2),
-        ...parseRaw(r3, batch3),
-      ];
-
-      if (all.length < 15) {
-        setGenError(`Yetarli savol kelmadi (${all.length}/30). Qaytadan urinib ko'ring.`);
+      if (all.length < 10) {
+        setGenError(`Savollar yetarli kelmadi (${all.length} ta). Internet yoki API kalitini tekshiring.`);
         setPhase("error");
         return;
       }
 
+      // Aniq savollar sonini saqlash (nechtasi kelsa shuncha)
       setQuestions(all);
       setPhase("quiz");
     } catch (e) {
-      setGenError("AI bilan bog'lanishda xatolik. Internet yoki API kalitini tekshiring.");
+      setGenError("AI bilan bog'lanishda xatolik. Qaytadan urinib ko'ring.");
       setPhase("error");
     }
   }
@@ -590,8 +603,8 @@ ${batchTopics.length} ta savol:`;
   }
 
   async function next() {
-    if (qi + 1 >= questions.length) {
-      // resultsRef.current — barcha natijalar to'liq
+    const total = questions.length;
+    if (qi + 1 >= total) {
       await finishTest(resultsRef.current);
     } else {
       setQi(i => i + 1);
@@ -622,14 +635,12 @@ ${batchTopics.length} ta savol:`;
       newWeak[t].correct += s.correct;
     });
 
-    // Daraja oshish/tushish qoidasi
-    // Oshadi: 70% va undan yuqori (21/30+)
-    // Tushadi: 40% dan past (12/30-)
-    const pct = correct / 30;
+    const pct = correct / questions.length; // questions.length — kelgan savollar soni
     let newLevel = user.level;
-    let levelChanged = "";
-    if (pct >= 0.70 && user.level < 10) { newLevel = user.level + 1; levelChanged = "up"; }
-    else if (pct < 0.40 && user.level > 1) { newLevel = user.level - 1; levelChanged = "down"; }
+    let lvlChanged = "";
+    if (pct >= 0.70 && user.level < 10) { newLevel = user.level + 1; lvlChanged = "up"; }
+    else if (pct < 0.40 && user.level > 1) { newLevel = user.level - 1; lvlChanged = "down"; }
+    setLevelChanged(lvlChanged);
 
     // Streak
     const today = new Date().toDateString();
@@ -650,7 +661,7 @@ ${batchTopics.length} ta savol:`;
       achievements: achs,
       testHistory: [...(user.testHistory || []).slice(-29), { 
         date: today, score: correct, level: newLevel, 
-        pct: Math.round(pct * 100), levelChanged 
+        pct: Math.round(pct * 100), levelChanged: lvlChanged
       }],
     };
     saveUser(updated);
@@ -705,14 +716,14 @@ ${batchTopics.length} ta savol:`;
             <Btn onClick={() => nav("home")} variant="outline" small>← Chiqish</Btn>
             <span style={{ fontWeight:700, fontSize:15 }}>
               <span style={{ color: C.accent }}>{qi + 1}</span>
-              <span style={{ color: C.muted }}> / 30</span>
+              <span style={{ color: C.muted }}> / {questions.length}</span>
             </span>
             <Tag color={C.accent2}>{DIFFICULTY[user.level]}</Tag>
           </div>
 
           {/* Progress bar */}
           <div style={{ height:4, background:C.faint, borderRadius:4, marginBottom:20 }}>
-            <div style={{ height:"100%", width:`${progress}%`,
+            <div style={{ height:"100%", width:`${(qi / questions.length) * 100}%`,
               background:`linear-gradient(90deg,${C.accent},${C.accent2})`,
               borderRadius:4, transition:"width .4s" }} />
           </div>
@@ -760,7 +771,7 @@ ${batchTopics.length} ta savol:`;
               {!confirmed
                 ? <Btn onClick={confirm} disabled={selected===null} full>✔ Tasdiqlash</Btn>
                 : <Btn onClick={next} variant="success" full>
-                    {qi + 1 >= 30 ? "🏁 Testni yakunlash" : "Keyingisi →"}
+                    {qi + 1 >= questions.length ? "🏁 Testni yakunlash" : "Keyingisi →"}
                   </Btn>
               }
             </div>
@@ -772,10 +783,10 @@ ${batchTopics.length} ta savol:`;
     );
   }
 
-  // ── RENDER: results ──
   if (phase === "results") {
+    const total = results.length;
     const correct = results.filter(r => r.correct).length;
-    const pct = Math.round((correct / 30) * 100);
+    const pct = Math.round((correct / Math.max(total, 1)) * 100);
     const topicBreakdown = {};
     results.forEach(r => {
       if (!topicBreakdown[r.topic]) topicBreakdown[r.topic] = { t:0, c:0 };
@@ -797,21 +808,21 @@ ${batchTopics.length} ta savol:`;
             border:`1px solid ${pct>=70?C.accent3:C.danger}40` }}>
             <div style={{ fontSize:58, fontWeight:800,
               color:pct>=70?C.accent3:pct>=50?C.warn:C.danger }}>
-              {correct}/30
+              {correct}/{total}
             </div>
             <div style={{ fontSize:24, color:C.muted, fontWeight:700 }}>{pct}%</div>
             <div style={{ fontSize:20, marginTop:8 }}>
               {pct>=70?"🏆 Ajoyib!":pct>=50?"👍 Yaxshi!":"💪 Ko'proq mashq kerak!"}
             </div>
-            {/* Daraja o'zgardi xabari */}
-            {user.testHistory?.slice(-1)[0]?.levelChanged === "up" && (
+            {/* Daraja o'zgardi xabari — state dan o'qiymiz */}
+            {levelChanged === "up" && (
               <div className="fadeUp" style={{ marginTop:12, padding:"10px 16px",
                 background:`${C.accent3}20`, border:`1px solid ${C.accent3}50`,
                 borderRadius:10, fontSize:16, fontWeight:700, color:C.accent3 }}>
                 🎉 Tabriklaymiz! Daraja oshdi → {user.level}
               </div>
             )}
-            {user.testHistory?.slice(-1)[0]?.levelChanged === "down" && (
+            {levelChanged === "down" && (
               <div className="fadeUp" style={{ marginTop:12, padding:"10px 16px",
                 background:`${C.warn}20`, border:`1px solid ${C.warn}50`,
                 borderRadius:10, fontSize:14, fontWeight:600, color:C.warn }}>
@@ -819,7 +830,7 @@ ${batchTopics.length} ta savol:`;
               </div>
             )}
             <div style={{ marginTop:10, fontSize:13, color:C.muted }}>
-              Daraja oshish: 70%+ (21/30) · Daraja tushish: 40%- (12/30)
+              Daraja oshish: 70%+ · Daraja tushish: 40%-
             </div>
           </Card>
 
