@@ -457,21 +457,32 @@ function TestPage({ user, saveUser, nav }) {
     setSelected(null);
     setConfirmed(false);
 
-    // Topic selection with weak topic bias
+    // Topic selection — takrorlanmaslik uchun shuffle + seed
     const weak = user.weakTopics || {};
     const weakKeys = Object.keys(weak).filter(k => weak[k].correct / weak[k].total < 0.6);
-    
+
+    // Fisher-Yates shuffle with time seed — har safar boshqa tartib
+    function shuffle(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
     let topics = [];
     if (weakKeys.length > 0 && user.totalTests > 0) {
-      // 40% weak topics, 60% random
-      const weakSlots = Math.min(12, weakKeys.length * 3);
-      for (let i = 0; i < weakSlots; i++) topics.push(weakKeys[i % weakKeys.length]);
-      const remaining = MATH_TOPICS.filter(t => !weakKeys.includes(t))
-        .sort(() => Math.random() - 0.5);
-      while (topics.length < 30) topics.push(remaining[topics.length % remaining.length]);
+      // Zaif mavzular: max 10 ta slot, qolgani boshqa mavzulardan
+      const weakShuffled = shuffle(weakKeys).slice(0, 10);
+      const others = shuffle(MATH_TOPICS.filter(t => !weakKeys.includes(t)));
+      // Zaif + boshqalar, jami 30, takrorsiz
+      topics = [...weakShuffled, ...others].slice(0, 30);
+      // Agar 30 ta bo'lmasa to'ldirish
+      while (topics.length < 30) topics.push(shuffle(MATH_TOPICS)[topics.length % 30]);
     } else {
-      // First test: all 30 topics once
-      topics = [...MATH_TOPICS].sort(() => Math.random() - 0.5).slice(0, 30);
+      // Birinchi test: barcha 30 mavzu, random tartibda
+      topics = shuffle(MATH_TOPICS).slice(0, 30);
     }
 
     // Daraja bo'yicha qat'iy qoidalar
@@ -611,11 +622,14 @@ ${batchTopics.length} ta savol:`;
       newWeak[t].correct += s.correct;
     });
 
-    // Level logic
+    // Daraja oshish/tushish qoidasi
+    // Oshadi: 70% va undan yuqori (21/30+)
+    // Tushadi: 40% dan past (12/30-)
     const pct = correct / 30;
     let newLevel = user.level;
-    if (pct >= 0.87 && user.level < 10) newLevel = user.level + 1;
-    else if (pct < 0.40 && user.level > 1) newLevel = user.level - 1;
+    let levelChanged = "";
+    if (pct >= 0.70 && user.level < 10) { newLevel = user.level + 1; levelChanged = "up"; }
+    else if (pct < 0.40 && user.level > 1) { newLevel = user.level - 1; levelChanged = "down"; }
 
     // Streak
     const today = new Date().toDateString();
@@ -634,7 +648,10 @@ ${batchTopics.length} ta savol:`;
       totalCorrect: (user.totalCorrect || 0) + correct,
       weakTopics: newWeak, streak: newStreak, lastDate: today,
       achievements: achs,
-      testHistory: [...(user.testHistory || []).slice(-19), { date: today, score: correct, level: newLevel }],
+      testHistory: [...(user.testHistory || []).slice(-29), { 
+        date: today, score: correct, level: newLevel, 
+        pct: Math.round(pct * 100), levelChanged 
+      }],
     };
     saveUser(updated);
 
@@ -779,12 +796,30 @@ ${batchTopics.length} ta savol:`;
             background:`linear-gradient(135deg,${pct>=70?C.accent3:C.danger}18,${C.card})`,
             border:`1px solid ${pct>=70?C.accent3:C.danger}40` }}>
             <div style={{ fontSize:58, fontWeight:800,
-              color:pct>=85?C.accent3:pct>=60?C.warn:C.danger }}>
+              color:pct>=70?C.accent3:pct>=50?C.warn:C.danger }}>
               {correct}/30
             </div>
             <div style={{ fontSize:24, color:C.muted, fontWeight:700 }}>{pct}%</div>
             <div style={{ fontSize:20, marginTop:8 }}>
-              {pct>=85?"🏆 Ajoyib!":pct>=60?"👍 Yaxshi!":"💪 Ko'proq mashq kerak!"}
+              {pct>=70?"🏆 Ajoyib!":pct>=50?"👍 Yaxshi!":"💪 Ko'proq mashq kerak!"}
+            </div>
+            {/* Daraja o'zgardi xabari */}
+            {user.testHistory?.slice(-1)[0]?.levelChanged === "up" && (
+              <div className="fadeUp" style={{ marginTop:12, padding:"10px 16px",
+                background:`${C.accent3}20`, border:`1px solid ${C.accent3}50`,
+                borderRadius:10, fontSize:16, fontWeight:700, color:C.accent3 }}>
+                🎉 Tabriklaymiz! Daraja oshdi → {user.level}
+              </div>
+            )}
+            {user.testHistory?.slice(-1)[0]?.levelChanged === "down" && (
+              <div className="fadeUp" style={{ marginTop:12, padding:"10px 16px",
+                background:`${C.warn}20`, border:`1px solid ${C.warn}50`,
+                borderRadius:10, fontSize:14, fontWeight:600, color:C.warn }}>
+                ⬇ Daraja tushdi → {user.level}. Ko'proq mashq qiling!
+              </div>
+            )}
+            <div style={{ marginTop:10, fontSize:13, color:C.muted }}>
+              Daraja oshish: 70%+ (21/30) · Daraja tushish: 40%- (12/30)
             </div>
           </Card>
 
@@ -957,9 +992,153 @@ function StatsPage({ user, nav }) {
     master:  { icon:"👑", label:"Master", desc:"10-darajaga yetdi" },
   };
 
+  const history = user.testHistory || [];
   const topWeak = Object.entries(user.weakTopics || {})
     .map(([t,v]) => ({ t, rate: Math.round((1-v.correct/v.total)*100) }))
     .sort((a,b)=>b.rate-a.rate).slice(0,8);
+
+  // Chart dimensions
+  const chartH = 120;
+  const chartW = 100; // percentage based
+  const maxScore = 30;
+
+  // SVG line chart
+  function LineChart({ data }) {
+    if (!data || data.length < 2) return (
+      <div style={{ textAlign:"center", color:C.muted, padding:"30px 0", fontSize:13 }}>
+        Grafik uchun kamida 2 ta test yechish kerak
+      </div>
+    );
+    const n = data.length;
+    const pts = data.map((d, i) => ({
+      x: (i / (n - 1)) * 100,
+      y: 100 - (d.score / maxScore) * 100,
+      d,
+    }));
+
+    const pathD = pts.map((p, i) =>
+      `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`
+    ).join(" ");
+
+    const areaD = `M ${pts[0].x} 100 ` +
+      pts.map(p => `L ${p.x} ${p.y}`).join(" ") +
+      ` L ${pts[pts.length-1].x} 100 Z`;
+
+    return (
+      <div style={{ position:"relative" }}>
+        {/* Y axis labels */}
+        <div style={{ display:"flex", marginBottom:4 }}>
+          <div style={{ width:28, display:"flex", flexDirection:"column",
+            justifyContent:"space-between", height:chartH, paddingBottom:20 }}>
+            {[30,20,10,0].map(v=>(
+              <span key={v} style={{ fontSize:10, color:C.muted, lineHeight:1 }}>{v}</span>
+            ))}
+          </div>
+          <div style={{ flex:1, position:"relative" }}>
+            {/* Grid lines */}
+            {[0,33,66,100].map(p=>(
+              <div key={p} style={{
+                position:"absolute", left:0, right:0,
+                top:`${p}%`, height:1,
+                background:`${C.border}80`,
+              }} />
+            ))}
+            {/* SVG chart */}
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none"
+              style={{ width:"100%", height:chartH, display:"block" }}>
+              {/* Area fill */}
+              <path d={areaD} fill={`${C.accent}18`} />
+              {/* Line */}
+              <path d={pathD} fill="none" stroke={C.accent} strokeWidth="2"
+                vectorEffect="non-scaling-stroke" />
+              {/* Level up markers */}
+              {pts.map((p, i) => p.d.levelChanged === "up" && (
+                <circle key={i} cx={p.x} cy={p.y} r="3"
+                  fill={C.accent3} vectorEffect="non-scaling-stroke" />
+              ))}
+              {pts.map((p, i) => p.d.levelChanged === "down" && (
+                <circle key={i} cx={p.x} cy={p.y} r="3"
+                  fill={C.danger} vectorEffect="non-scaling-stroke" />
+              ))}
+              {/* Regular dots */}
+              {pts.map((p, i) => !p.d.levelChanged && (
+                <circle key={i} cx={p.x} cy={p.y} r="2"
+                  fill={C.accent} vectorEffect="non-scaling-stroke" />
+              ))}
+            </svg>
+          </div>
+        </div>
+
+        {/* X labels */}
+        <div style={{ display:"flex", paddingLeft:28, marginTop:4 }}>
+          {data.slice(-1)[0] && (
+            <div style={{ display:"flex", justifyContent:"space-between", width:"100%" }}>
+              <span style={{ fontSize:10, color:C.muted }}>
+                {data[0]?.date?.slice(4,10) || ""}
+              </span>
+              <span style={{ fontSize:10, color:C.muted }}>
+                {data[data.length-1]?.date?.slice(4,10) || "Bugun"}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Legend */}
+        <div style={{ display:"flex", gap:14, marginTop:8, flexWrap:"wrap" }}>
+          <span style={{ fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:4 }}>
+            <span style={{ width:8, height:8, borderRadius:"50%", background:C.accent3, display:"inline-block" }} />
+            Daraja oshdi
+          </span>
+          <span style={{ fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:4 }}>
+            <span style={{ width:8, height:8, borderRadius:"50%", background:C.danger, display:"inline-block" }} />
+            Daraja tushdi
+          </span>
+          <span style={{ fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:4 }}>
+            <span style={{ width:8, height:2, background:C.accent, display:"inline-block" }} />
+            Ball
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // Daraja tarixi grafigi
+  function LevelChart({ data }) {
+    if (!data || data.length < 2) return null;
+    const n = data.length;
+    const pts = data.map((d, i) => ({
+      x: (i / (n - 1)) * 100,
+      y: 100 - ((d.level - 1) / 9) * 100,
+      d,
+    }));
+    const pathD = pts.map((p, i) => `${i===0?"M":"L"} ${p.x} ${p.y}`).join(" ");
+
+    return (
+      <div style={{ marginTop:16 }}>
+        <p style={{ fontSize:13, color:C.accent2, fontWeight:600, marginBottom:8 }}>
+          📶 Daraja o'zgarishi
+        </p>
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none"
+          style={{ width:"100%", height:60, display:"block" }}>
+          {[1,3,5,7,9].map(l=>(
+            <line key={l} x1="0" x2="100"
+              y1={100-((l-1)/9)*100} y2={100-((l-1)/9)*100}
+              stroke={`${C.border}60`} strokeWidth="0.5" vectorEffect="non-scaling-stroke" />
+          ))}
+          <path d={pathD} fill="none" stroke={C.accent2} strokeWidth="2.5"
+            strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          {pts.map((p,i)=>(
+            <circle key={i} cx={p.x} cy={p.y} r="2.5"
+              fill={C.accent2} vectorEffect="non-scaling-stroke" />
+          ))}
+        </svg>
+        <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:C.muted }}>
+          <span>Daraja 1</span>
+          <span>Daraja 10</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:C.bg, padding:"16px" }}>
@@ -979,13 +1158,19 @@ function StatsPage({ user, nav }) {
             fontSize:24, fontWeight:800, color:"#fff" }}>
             {user.name[0].toUpperCase()}
           </div>
-          <div>
+          <div style={{ flex:1 }}>
             <h3 style={{ fontSize:18, fontWeight:700 }}>{user.name} {user.surname}</h3>
             <div style={{ display:"flex", gap:8, marginTop:6, flexWrap:"wrap" }}>
               <Tag color={C.accent}>Daraja {user.level}</Tag>
               <Tag color={C.warn}>{user.streak||0} 🔥 streak</Tag>
               <Tag color={C.accent2}>{DIFFICULTY[user.level]}</Tag>
             </div>
+          </div>
+          <div style={{ textAlign:"right", flexShrink:0 }}>
+            <div style={{ fontSize:11, color:C.muted }}>Daraja oshish</div>
+            <div style={{ fontSize:13, fontWeight:600, color:C.accent3 }}>70%+ (21/30)</div>
+            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>Daraja tushish</div>
+            <div style={{ fontSize:13, fontWeight:600, color:C.danger }}>40%- (12/30)</div>
           </div>
         </Card>
 
@@ -994,7 +1179,7 @@ function StatsPage({ user, nav }) {
           {[
             {v:user.totalTests||0, l:"Jami testlar", icon:"📝", c:C.accent},
             {v:user.totalCorrect||0, l:"To'g'ri javoblar", icon:"✅", c:C.accent3},
-            {v:`${acc}%`, l:"Aniqlik", icon:"🎯", c:C.accent2},
+            {v:`${acc}%`, l:"Umumiy aniqlik", icon:"🎯", c:C.accent2},
           ].map(s=>(
             <Card key={s.l} style={{ textAlign:"center" }}>
               <div style={{ fontSize:22 }}>{s.icon}</div>
@@ -1004,24 +1189,14 @@ function StatsPage({ user, nav }) {
           ))}
         </div>
 
-        {/* History chart */}
-        {user.testHistory?.length > 0 && (
+        {/* GRAFIK */}
+        {history.length > 0 && (
           <Card style={{ marginBottom:14 }}>
-            <p style={{ fontWeight:700, fontSize:14, color:C.accent, marginBottom:14 }}>
-              📈 So'nggi {user.testHistory.length} ta test
+            <p style={{ fontWeight:700, fontSize:14, color:C.accent, marginBottom:16 }}>
+              📈 Ball o'zgarishi (so'nggi {history.length} ta test)
             </p>
-            <div style={{ display:"flex", alignItems:"flex-end", gap:5, height:70 }}>
-              {user.testHistory.slice(-15).map((t,i)=>(
-                <div key={i} style={{ flex:1, display:"flex", flexDirection:"column",
-                  alignItems:"center", gap:3 }}>
-                  <div style={{ width:"100%", minHeight:4,
-                    height:`${Math.max(4,(t.score/30)*62)}px`,
-                    background:t.score>=25?C.accent3:t.score>=18?C.accent:C.warn,
-                    borderRadius:"3px 3px 0 0" }} />
-                  <span style={{ fontSize:9, color:C.muted }}>{t.score}</span>
-                </div>
-              ))}
-            </div>
+            <LineChart data={history.slice(-20)} />
+            <LevelChart data={history.slice(-20)} />
           </Card>
         )}
 
@@ -1039,10 +1214,10 @@ function StatsPage({ user, nav }) {
                     <span style={{ fontSize:13, fontWeight:600,
                       color:t.rate>60?C.danger:C.warn }}>{t.rate}% xato</span>
                   </div>
-                  <div style={{ height:4, background:C.faint, borderRadius:4 }}>
+                  <div style={{ height:5, background:C.faint, borderRadius:4 }}>
                     <div style={{ height:"100%", width:`${t.rate}%`,
-                      background:t.rate>60?C.danger:C.warn,
-                      borderRadius:4, transition:"width .5s" }} />
+                      background:`linear-gradient(90deg,${t.rate>60?C.danger:C.warn},${t.rate>60?"#dc262680":C.warn+"80"})`,
+                      borderRadius:4, transition:"width .6s" }} />
                   </div>
                 </div>
               ))}
