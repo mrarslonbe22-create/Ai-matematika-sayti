@@ -444,7 +444,7 @@ function TestPage({ user, saveUser, nav }) {
   const [analysis, setAnalysis] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [genError, setGenError] = useState("");
-  const chatRef = useRef();
+  const resultsRef = useRef([]);
 
   useEffect(() => { generateQuestions(); }, []);
 
@@ -452,6 +452,7 @@ function TestPage({ user, saveUser, nav }) {
     setPhase("loading");
     setGenError("");
     setResults([]);
+    resultsRef.current = [];
     setQi(0);
     setSelected(null);
     setConfirmed(false);
@@ -473,54 +474,112 @@ function TestPage({ user, saveUser, nav }) {
       topics = [...MATH_TOPICS].sort(() => Math.random() - 0.5).slice(0, 30);
     }
 
-    const diffLabel = ["","oson","oson-o'rta","o'rta","o'rta","o'rta-qiyin","qiyin","qiyin","juda qiyin","juda qiyin","eng qiyin"][user.level];
+    // Daraja bo'yicha qat'iy qoidalar
+    const levelRules = {
+      1: "FAQAT oddiy arifmetika: qo'shish, ayirish, ko'paytirish, bo'lish. Masalan: 24+18=?, 56-29=?, 7×8=?, 48÷6=?. Integral, ildiz, logarifm, daraja MUTLAQO YO'Q.",
+      2: "Oddiy kasrlar va foizlar. Masalan: 1/2+1/4=?, 3/5-1/5=?, 40 ning 25%i=?. Integral, logarifm YO'Q.",
+      3: "Kasrlar, foizlar, oddiy nisbatlar. Masalan: 2/3×9=?, 60 ning 30%i=?, 15:3=?. Integral YO'Q.",
+      4: "Oddiy algebra va ildizlar. Masalan: x+7=15, 3x=21, √49=?, √81=?. Integral YO'Q.",
+      5: "Chiziqli tenglamalar, oddiy geometriya. Masalan: 2x+3=11, to'rtburchak yuzi a=5 b=3. Integral YO'Q.",
+      6: "Kvadrat tenglamalar, sin/cos asoslari. Masalan: x²-5x+6=0, sin30°=?.",
+      7: "Logarifmlar, murakkab trigonometriya. Masalan: log₂8=?, 2sin²x+2cos²x=?.",
+      8: "Kombinatorika, progressiyalar, murakkab log. Masalan: C(5,2)=?, 1+3+5+...+19=?.",
+      9: "Hosilalar, murakkab funksiyalar. Masalan: f(x)=x²+3x, f'(x)=?.",
+      10: "Integral, differentsial tenglamalar. Masalan: ∫(2x+1)dx=?, murakkab masalalar.",
+    }[user.level] || "o'rta daraja";
 
-    const prompt = `Sen o'zbek tilida matematika testlari yaratuvchisan.
-Quyidagi ${topics.length} ta mavzu uchun har biri uchun 1 tadan test savoli yarat.
-Mavzular tartibda: ${topics.join(" | ")}
+    const SYSTEM = "Siz matematik test yaratuvchi AI siz. FAQAT sof JSON array qaytaring. Boshida [ belgisi, oxirida ] belgisi bo'lsin. Hech qanday ``` kod bloki, izoh yoki qo'shimcha matn YO'Q.";
 
-Daraja: ${diffLabel} (daraja ${user.level}/10)
-${user.level >= 7 ? "Savollar integral, differentsial, trigonometrik identikliklar, kompleks hisob-kitoblar bo'lsin." : ""}
-${user.level <= 3 ? "Savollar oddiy arifmetika, kasrlar, foizlar darajasida bo'lsin." : ""}
+    function makePrompt(batch, batchTopics) {
+      return `O'zbek tilida matematika testi. ${batchTopics.length} ta savol yarat.
 
-QOIDA: Faqat JSON qaytargin, hech qanday boshqa matn yo'q:
-[{"topic":"mavzu","q":"savol","opts":["A) ...","B) ...","C) ...","D) ..."],"ans":0,"exp":"qisqa tushuntirish"},...]
-"ans" — to'g'ri javob indeksi (0,1,2,3)
-Raqamlar aniq bo'lsin, javob variantlari bir-biridan farqlansin.`;
+DARAJA ${user.level}/10: ${levelRules}
+
+Mavzular: ${batchTopics.join(" | ")}
+
+QOIDALAR:
+- Har savol to'liq va aniq bo'lsin: "15 + 27 = ?" yoki "Agar x + 5 = 13 bo'lsa, x = ?"
+- Savol matni qisqa emas, TO'LIQ bo'lsin
+- 4 ta variant, biri to'g'ri, qolganlari mantiqiy noto'g'ri
+- ans = to'g'ri javob indeksi (0, 1, 2 yoki 3)
+
+Format (faqat shu):
+[{"topic":"mavzu","q":"to'liq savol matni raqamlar bilan","opts":["A) birinchi","B) ikkinchi","C) uchinchi","D) to'rtinchi"],"ans":0,"exp":"qisqa yechim"}]
+
+${batchTopics.length} ta savol yarat:`;
+    }
 
     try {
-      const raw = await callAI(
-        [{ role: "user", content: prompt }],
-        "Siz matematik test yaratuvchi AI siz. FAQAT JSON qaytaring. Hech qanday izoh yoki kod bloki yo'q.",
-        4500
-      );
-      const clean = raw.replace(/```[\w]*\n?/g, "").replace(/```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      setQuestions(parsed.map((q, i) => ({ ...q, _topic: topics[i] })));
+      // 30 ta savolni 3 ta 10 talik guruhga bo'lib so'raymiz
+      const batch1 = topics.slice(0, 10);
+      const batch2 = topics.slice(10, 20);
+      const batch3 = topics.slice(20, 30);
+
+      const [r1, r2, r3] = await Promise.all([
+        callAI([{ role: "user", content: makePrompt(1, batch1) }], SYSTEM, 2000),
+        callAI([{ role: "user", content: makePrompt(2, batch2) }], SYSTEM, 2000),
+        callAI([{ role: "user", content: makePrompt(3, batch3) }], SYSTEM, 2000),
+      ]);
+
+      function parseRaw(raw, batchTopics) {
+        const match = raw.match(/\[[\s\S]*?\]/);
+        if (!match) return [];
+        try {
+          const arr = JSON.parse(match[0]);
+          return arr.filter(q =>
+            q.q && q.q.length > 5 &&           // savol bo'sh emas
+            Array.isArray(q.opts) &&
+            q.opts.length === 4 &&
+            q.opts.every(o => o && o.length > 2) && // variantlar bo'sh emas
+            typeof q.ans === "number" &&
+            q.ans >= 0 && q.ans <= 3
+          ).map((q, i) => ({ ...q, _topic: batchTopics[i] || q.topic }));
+        } catch { return []; }
+      }
+
+      const all = [
+        ...parseRaw(r1, batch1),
+        ...parseRaw(r2, batch2),
+        ...parseRaw(r3, batch3),
+      ];
+
+      if (all.length < 15) {
+        setGenError(`Yetarli savol kelmadi (${all.length}/30). Qaytadan urinib ko'ring.`);
+        setPhase("error");
+        return;
+      }
+
+      setQuestions(all);
       setPhase("quiz");
     } catch (e) {
-      setGenError("AI javob bermadi. Qaytadan urinib ko'ring.");
+      setGenError("AI bilan bog'lanishda xatolik. Internet yoki API kalitini tekshiring.");
       setPhase("error");
     }
   }
+
+  // resultsRef — state async bo'lgani uchun ref orqali to'g'ri qiymat olamiz
+  const resultsRef = useRef([]);
 
   function confirm() {
     if (selected === null) return;
     const q = questions[qi];
     const correct = selected === q.ans;
-    setResults(r => [...r, {
+    const newEntry = {
       topic: q.topic || q._topic,
       correct, question: q.q,
       explanation: q.exp,
       selectedIdx: selected, correctIdx: q.ans, options: q.opts,
-    }]);
+    };
+    const updated = [...resultsRef.current, newEntry];
+    resultsRef.current = updated;
+    setResults(updated);
     setConfirmed(true);
   }
 
   async function next() {
-    const newResults = results; // already updated above
     if (qi + 1 >= questions.length) {
-      await finishTest(newResults);
+      // resultsRef.current — barcha natijalar to'liq
+      await finishTest(resultsRef.current);
     } else {
       setQi(i => i + 1);
       setSelected(null);
