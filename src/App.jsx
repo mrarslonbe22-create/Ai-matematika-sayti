@@ -499,18 +499,19 @@ Mavzular: ${batchTopics.join(" | ")}
 
 QOIDALAR:
 - Har savol to'liq va aniq bo'lsin: "15 + 27 = ?" yoki "Agar x + 5 = 13 bo'lsa, x = ?"
-- Savol matni qisqa emas, TO'LIQ bo'lsin
-- 4 ta variant, biri to'g'ri, qolganlari mantiqiy noto'g'ri
-- ans = to'g'ri javob indeksi (0, 1, 2 yoki 3)
+- 4 ta variant yarat, faqat biri to'g'ri
+- "correct" maydoniga TO'G'RI JAVOB MATNINI yoz (opts ichidagi to'g'ri variantni aynan ko'chir)
+- To'g'ri javob har doim turli pozitsiyada bo'lsin (har safar A emas!)
 
-Format (faqat shu):
-[{"topic":"mavzu","q":"to'liq savol matni raqamlar bilan","opts":["A) birinchi","B) ikkinchi","C) uchinchi","D) to'rtinchi"],"ans":0,"exp":"qisqa yechim"}]
+Format (faqat shu, boshqa narsa yo'q):
+[{"topic":"mavzu nomi","q":"to'liq savol matni","opts":["A) ...", "B) ...", "C) ...", "D) ..."],"correct":"B) 10 so'm","exp":"50 × 0.2 = 10"}]
 
-${batchTopics.length} ta savol yarat:`;
+MUHIM: "correct" — opts ichidagi to'g'ri javobning AYNAN o'zi bo'lsin.
+
+${batchTopics.length} ta savol:`;
     }
 
     try {
-      // 30 ta savolni 3 ta 10 talik guruhga bo'lib so'raymiz
       const batch1 = topics.slice(0, 10);
       const batch2 = topics.slice(10, 20);
       const batch3 = topics.slice(20, 30);
@@ -522,18 +523,22 @@ ${batchTopics.length} ta savol yarat:`;
       ]);
 
       function parseRaw(raw, batchTopics) {
-        const match = raw.match(/\[[\s\S]*?\]/);
+        // greedy match — nested brackets uchun
+        const match = raw.match(/\[[\s\S]*\]/);
         if (!match) return [];
         try {
           const arr = JSON.parse(match[0]);
           return arr.filter(q =>
-            q.q && q.q.length > 5 &&           // savol bo'sh emas
-            Array.isArray(q.opts) &&
-            q.opts.length === 4 &&
-            q.opts.every(o => o && o.length > 2) && // variantlar bo'sh emas
-            typeof q.ans === "number" &&
-            q.ans >= 0 && q.ans <= 3
-          ).map((q, i) => ({ ...q, _topic: batchTopics[i] || q.topic }));
+            q.q && q.q.length > 5 &&
+            Array.isArray(q.opts) && q.opts.length === 4 &&
+            q.opts.every(o => o && o.length > 2) &&
+            q.correct && q.opts.includes(q.correct) // correct opts ichida bo'lishi shart
+          ).map((q, i) => ({
+            ...q,
+            // ans ni correct matnidan topamiz — xato bo'lmaydi
+            ans: q.opts.indexOf(q.correct),
+            _topic: batchTopics[i] || q.topic,
+          }));
         } catch { return []; }
       }
 
