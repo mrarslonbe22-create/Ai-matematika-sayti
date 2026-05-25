@@ -435,9 +435,9 @@ function ActionCard({ emoji, title, desc, color, btnLabel, onClick, variant }) {
 
 // ─── TEST PAGE ────────────────────────────────────────────────────────────────
 function TestPage({ user, saveUser, nav }) {
-  const [phase, setPhase] = useState("loading"); // loading | quiz | results | analysis
+  const [phase, setPhase] = useState("loading");
   const [questions, setQuestions] = useState([]);
-  const [qi, setQi] = useState(0);          // question index
+  const [qi, setQi] = useState(0);
   const [selected, setSelected] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
   const [results, setResults] = useState([]);
@@ -446,8 +446,27 @@ function TestPage({ user, saveUser, nav }) {
   const [levelChanged, setLevelChanged] = useState("");
   const [genError, setGenError] = useState("");
   const resultsRef = useRef([]);
+  const isMounted = useRef(true);
 
-  useEffect(() => { generateQuestions(); }, []);
+  useEffect(() => {
+    isMounted.current = true;
+    generateQuestions();
+    return () => { isMounted.current = false; };
+  }, []);
+
+  function goHome() {
+    isMounted.current = false;
+    setPhase("loading");
+    setQuestions([]);
+    setResults([]);
+    resultsRef.current = [];
+    setQi(0);
+    setSelected(null);
+    setConfirmed(false);
+    setAnalysis("");
+    setLevelChanged("");
+    setTimeout(() => nav("home"), 0);
+  }
 
   async function generateQuestions() {
     setPhase("loading");
@@ -713,7 +732,7 @@ JSON (faqat bu format, hech narsa qo'shma):
         <div style={{ maxWidth: 680, margin: "0 auto" }}>
           {/* Top bar */}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingTop:8, marginBottom:16 }}>
-            <Btn onClick={() => nav("home")} variant="outline" small>← Chiqish</Btn>
+            <Btn onClick={goHome} variant="outline" small>← Chiqish</Btn>
             <span style={{ fontWeight:700, fontSize:15 }}>
               <span style={{ color: C.accent }}>{qi + 1}</span>
               <span style={{ color: C.muted }}> / {questions.length}</span>
@@ -799,7 +818,7 @@ JSON (faqat bu format, hech narsa qo'shma):
         <div style={{ maxWidth:720, margin:"0 auto" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingTop:8, marginBottom:20 }}>
             <h2 style={{ fontSize:20, fontWeight:800 }}>📊 Test natijalari</h2>
-            <Btn onClick={() => nav("home")} variant="ghost" small>🏠 Bosh sahifa</Btn>
+            <Btn onClick={goHome} variant="ghost" small>🏠 Bosh sahifa</Btn>
           </div>
 
           {/* Score */}
@@ -868,7 +887,7 @@ JSON (faqat bu format, hech narsa qo'shma):
           </Card>
 
           <div style={{ display:"flex", gap:10 }}>
-            <Btn onClick={generateQuestions} full>🔄 Yangi test</Btn>
+            <Btn onClick={() => { setLevelChanged(""); generateQuestions(); }} full>🔄 Yangi test</Btn>
             <Btn onClick={() => nav("learn")} variant="ghost" full>📚 Darsliklar</Btn>
           </div>
 
@@ -916,7 +935,7 @@ function LearnPage({ user, nav }) {
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
           paddingTop:8, marginBottom:22 }}>
           <h2 style={{ fontSize:20, fontWeight:800 }}>📚 Darsliklar</h2>
-          <Btn onClick={() => nav("home")} variant="ghost" small>← Orqaga</Btn>
+          <Btn onClick={goHome} variant="ghost" small>← Orqaga</Btn>
         </div>
 
         <div style={{ display:"grid", gridTemplateColumns:topic?"260px 1fr":"1fr", gap:16 }}>
